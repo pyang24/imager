@@ -2253,6 +2253,7 @@ def open_folder_browser():
                 pass
         on_open()
     path_entry.bind('<Return>', on_enter_open)
+    path_entry.bind("<Button-3>", cut_copy_paste_menu) # Right-click context menu for Cut/Copy/Paste/Select All
     Button(top, text="Open", command=on_open).pack(side='left', padx=4)
 
     # Pre-expand to current folder if valid
@@ -2309,6 +2310,30 @@ def on_window_close():
         except Exception:
             pass
 
+def cut_copy_paste_menu(event):
+    import tkinter as _tk
+    widget = event.widget
+    menu = _tk.Menu(root, tearoff=0)
+    menu.add_command(label="Cut",   command=lambda: widget.event_generate("<<Cut>>"))
+    menu.add_command(label="Copy",  command=lambda: widget.event_generate("<<Copy>>"))
+    menu.add_command(label="Paste", command=lambda: widget.event_generate("<<Paste>>"))
+    menu.add_separator()
+    menu.add_command(label="Select All", command=lambda: (widget.select_range(0, END), widget.icursor(END)))
+    try:
+        menu.tk_popup(event.x_root, event.y_root)
+    finally:
+        menu.grab_release()
+
+def file_text_copy_menu(event):
+    import tkinter as _tk
+    widget = event.widget
+    menu = _tk.Menu(root, tearoff=0)
+    menu.add_command(label="Copy",  command=lambda: widget.event_generate("<<Copy>>"))
+    try:
+        menu.tk_popup(event.x_root, event.y_root)
+    finally:
+        menu.grab_release()
+
 # --- GUI setup ---
 root = Tk()
 root.title("File Control Panel")
@@ -2332,6 +2357,8 @@ file_filter_var = StringVar()
 file_filter_entry = Entry(filter_frame, textvariable=file_filter_var, width=60)
 file_filter_entry.pack(side='left', padx=2)
 file_filter_entry.bind('<Return>', lambda event: [load_filtered_files_multi() if multiimage_mode.get() else load_filtered_files_single()])
+
+file_filter_entry.bind("<Button-3>", cut_copy_paste_menu) # Right-click context menu for Cut/Copy/Paste/Select All
 
 Button(filter_frame, text="Load Filtered Files", command=lambda: load_filtered_files_multi() if multiimage_mode.get() else load_filtered_files_single()).pack(side='left', padx=2)
 
@@ -2360,6 +2387,7 @@ file_list.pack(padx=10, pady=5, fill=BOTH, expand=True)
 scrollbar.config(command=file_list.yview)
 file_list.bind('<<ListboxSelect>>', lambda event: manual_select_multi(event) if multiimage_mode.get() else manual_select_single(event))
 file_list.bind("<Button-1>", lambda event: on_file_list_click(event) if multiimage_mode.get() else manual_select_single(event))
+file_list.bind("<Button-3>", file_text_copy_menu)
 
 button_frame = Frame(root)
 button_frame.pack(pady=5)
@@ -2384,6 +2412,7 @@ max_pixel_var = StringVar()
 max_pixel_entry = Entry(max_pixel_entry_frame, textvariable=max_pixel_var, width=10)
 max_pixel_entry.pack(side='left')
 max_pixel_entry.bind('<Return>', lambda event: set_max_pixel())
+max_pixel_entry.bind("<Button-3>", cut_copy_paste_menu)
 
 Button(max_pixel_entry_frame, text="Set Max Pixel", command=set_max_pixel).pack(side='left', padx=2)
 Button(max_pixel_entry_frame, text="Reset Max Pixel", command=reset_max_pixel).pack(side='left', padx=2)
@@ -2401,10 +2430,12 @@ Label(zoom_size_frame, text="Zoom Size X (pixels):").pack(side='left')
 zoom_size_x_entry = Entry(zoom_size_frame, textvariable=zoom_size_x_var, width=6)
 zoom_size_x_entry.pack(side='left', padx=2)
 zoom_size_x_entry.bind('<Return>', lambda event: [update_zoom_size_from_entry(), apply_zoom()])
+zoom_size_x_entry.bind("<Button-3>", cut_copy_paste_menu)
 Label(zoom_size_frame, text="Y:").pack(side='left')
 zoom_size_y_entry = Entry(zoom_size_frame, textvariable=zoom_size_y_var, width=6)
 zoom_size_y_entry.pack(side='left', padx=2)
 zoom_size_y_entry.bind('<Return>', lambda event: [update_zoom_size_from_entry(), apply_zoom()])
+zoom_size_y_entry.bind("<Button-3>", cut_copy_paste_menu)
 Button(zoom_size_frame, text="Apply Zoom Size", command=lambda: [update_zoom_size_from_entry(), apply_zoom()]).pack(side='left', padx=4)
 
 slider_frame = Frame(button_frame)
