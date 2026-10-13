@@ -62,6 +62,7 @@ python imager.py
 9. Export results with:
    - **Save Filtered as Tiff & Metafile**
    - **Save All as Tiff & Metafile**
+10. When saving finishes, a completion message appears in the File Control Panel and the panel returns to the foreground. Continue browsing or exporting without terminating or restarting the app.
 
 ## File Handling Notes
 
