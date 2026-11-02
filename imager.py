@@ -5,7 +5,7 @@ which is much faster than the previous version that can be very slow on network 
 
 This is a combined version for both 500K and 1M pixel detectors, with automatic shape detection.
 
-This also converts master.h5 metadata extraction to a separate .metafile text file when saving 000001.h5 files to tiff.
+When Metafile is checked, master.h5 metadata is saved to a separate .metafile text file alongside TIFF images.
 
 """
 
@@ -1152,12 +1152,13 @@ def loop_through_images_multi(idx):
 
 def save_all_files_in_directory_multi():
     """Save all images from all HDF5 files in the directory as TIFF files,
-    and save metadata from corresponding master files as TXT files (one per master)."""
+    optionally saving master metadata as .metafile files (one per master)."""
     if not current_folder:
         print("No directory selected.")
         return
 
-    out_dir = filedialog.askdirectory(title="Select Output Directory for TIFFs and Metadata")
+    save_metafile = metafile_enabled.get()
+    out_dir = filedialog.askdirectory(title="Select Output Directory for TIFFs" + (" and Metadata" if save_metafile else ""))
     if not out_dir:
         print("Directory selection cancelled.")
         return
@@ -1199,7 +1200,7 @@ def save_all_files_in_directory_multi():
                     total_files_processed += 1
                     
                     # Save metadata from master file (only once per master file)
-                    master_path = get_master_file_path(fname, current_folder)
+                    master_path = get_master_file_path(fname, current_folder) if save_metafile else None
                     if master_path and master_path not in processed_master_files:
                         metadata = extract_metadata_from_master(master_path)
                         if metadata:
@@ -1218,8 +1219,9 @@ def save_all_files_in_directory_multi():
 
 def save_filtered_files_as_tiff_multi():
     """Save all filtered images as individual TIFF files in a selected output directory,
-    and save metadata from corresponding master files as TXT files (one per master)."""
-    out_dir = filedialog.askdirectory(title="Select Output Directory for Filtered TIFFs and Metadata")
+    optionally saving master metadata as .metafile files (one per master)."""
+    save_metafile = metafile_enabled.get()
+    out_dir = filedialog.askdirectory(title="Select Output Directory for Filtered TIFFs" + (" and Metadata" if save_metafile else ""))
     if not out_dir:
         print("Directory selection cancelled.")
         return
@@ -1239,7 +1241,7 @@ def save_filtered_files_as_tiff_multi():
             count += 1
         
         # Save metadata from master file (only once per master file)
-        master_path = get_master_file_path(base, current_folder)
+        master_path = get_master_file_path(base, current_folder) if save_metafile else None
         if master_path and master_path not in processed_master_files:
             metadata = extract_metadata_from_master(master_path)
             if metadata:
@@ -1665,12 +1667,13 @@ def save_image(data, out_dir, fname):
 
 def save_all_files_in_directory_single():
     """Save all HDF5 files in the directory as TIFF files,
-    and save metadata from corresponding master files as TXT files (one per master)."""
+    optionally saving master metadata as .metafile files (one per master)."""
     if not current_folder:
         print("No directory selected.")
         return
 
-    output_folder = filedialog.askdirectory(title="Select Output Directory to Save TIFF Images and Metadata")
+    save_metafile = metafile_enabled.get()
+    output_folder = filedialog.askdirectory(title="Select Output Directory to Save TIFF Images" + (" and Metadata" if save_metafile else ""))
     if not output_folder:
         print("Directory selection cancelled.")
         return
@@ -1694,7 +1697,7 @@ def save_all_files_in_directory_single():
                     count += 1
                     
                     # Save metadata from master file (only once per master file)
-                    master_path = get_master_file_path(fname, current_folder)
+                    master_path = get_master_file_path(fname, current_folder) if save_metafile else None
                     if master_path and master_path not in processed_master_files:
                         metadata = extract_metadata_from_master(master_path)
                         if metadata:
@@ -1715,11 +1718,12 @@ def save_all_files_in_directory_single():
 
 def save_filtered_files_as_tiff_single():
     """Save all filtered files as TIFF images,
-    and save metadata from corresponding master files as TXT files (one per master)."""
+    optionally saving master metadata as .metafile files (one per master)."""
     if not files_data:
         print("No files loaded.")
         return
-    output_folder = filedialog.askdirectory(title="Select Output Directory to Save TIFF Images and Metadata")
+    save_metafile = metafile_enabled.get()
+    output_folder = filedialog.askdirectory(title="Select Output Directory to Save TIFF Images" + (" and Metadata" if save_metafile else ""))
     if not output_folder:
         print("Directory selection cancelled.")
         return
@@ -1737,7 +1741,7 @@ def save_filtered_files_as_tiff_single():
             count += 1
             
             # Save metadata from master file (only once per master file)
-            master_path = get_master_file_path(fname, current_folder)
+            master_path = get_master_file_path(fname, current_folder) if save_metafile else None
             if master_path and master_path not in processed_master_files:
                 metadata = extract_metadata_from_master(master_path)
                 if metadata:
@@ -2395,8 +2399,10 @@ button_frame.pack(pady=5)
 refresh_save_frame = Frame(button_frame)
 refresh_save_frame.pack(pady=5)
 Button(refresh_save_frame, text="Refresh File List", command=lambda: refresh_file_list_multi() if multiimage_mode.get() else refresh_file_list_single()).pack(side='left', padx=20)
-Button(refresh_save_frame, text="Save Filtered as Tiff & Metafile", command=lambda: save_filtered_files_as_tiff_multi() if multiimage_mode.get() else save_filtered_files_as_tiff_single()).pack(side='left', padx=2)
-Button(refresh_save_frame, text="Save All as Tiff & Metafile", command=lambda: save_all_files_in_directory_multi() if multiimage_mode.get() else save_all_files_in_directory_single()).pack(side='left', padx=2)
+Button(refresh_save_frame, text="Save Filtered as Tiff", command=lambda: save_filtered_files_as_tiff_multi() if multiimage_mode.get() else save_filtered_files_as_tiff_single()).pack(side='left', padx=2)
+Button(refresh_save_frame, text="Save All as Tiff", command=lambda: save_all_files_in_directory_multi() if multiimage_mode.get() else save_all_files_in_directory_single()).pack(side='left', padx=2)
+metafile_enabled = BooleanVar(value=False)
+Checkbutton(refresh_save_frame, text="Metafile", variable=metafile_enabled).pack(side='left', padx=2)
 
 movie_frame = Frame(button_frame)
 movie_frame.pack(pady=5)
