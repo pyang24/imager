@@ -27,6 +27,7 @@ import gc
 import re
 import tkinter.ttk as ttk
 import threading
+import queue
 
 # Track scheduled callbacks to prevent orphaned commands
 scheduled_callbacks = []
@@ -1150,6 +1151,114 @@ def loop_through_images_multi(idx):
         # If image loading fails, try wrapping back to beginning
         root.after(playback_speed_ms, lambda: loop_through_images_multi(0))
 
+def start_tiff_conversion(source_files, out_dir, multi, save_metafile, indexed_names=False):
+    """Convert a snapshot of input files off-thread; update Tk only on its thread."""
+    if not source_files:
+        print("No files to convert.")
+        return
+
+    pause_movie()
+    progress_window = Toplevel(root)
+    progress_window.title("HDF5/TIFF Conversion Progress")
+    progress_window.resizable(False, False)
+    progress_window.transient(root)
+    status = StringVar(value=f"0 / {len(source_files):,} files converted (0.0%)")
+    Label(progress_window, textvariable=status, padx=20, pady=12).pack()
+    progress_bar = ttk.Progressbar(
+        progress_window, mode="determinate", maximum=len(source_files), length=460
+    )
+    progress_bar.pack(padx=20, pady=(0, 12))
+    detail = StringVar(value="Converting...")
+    Label(progress_window, textvariable=detail, padx=20).pack()
+    close_button = Button(progress_window, text="Close", state="disabled",
+                          command=progress_window.destroy)
+    close_button.pack(pady=12)
+    # Keep the source selection and conversion settings stable during the job.
+    progress_window.protocol("WM_DELETE_WINDOW", lambda: None)
+    progress_window.grab_set()
+    updates = queue.Queue()
+
+    def convert_files():
+        converted = 0
+        failed = 0
+        images_saved = 0
+        metadata_saved = 0
+        processed_masters = set()
+        try:
+            for processed, (fname, filepath) in enumerate(source_files, start=1):
+                try:
+                    if multi:
+                        with h5py.File(filepath, 'r') as hdf:
+                            data = next((hdf[path] for path in
+                                         ('/entry/data/data', '/data') if path in hdf), None)
+                            if not isinstance(data, h5py.Dataset) or data.ndim not in (2, 3):
+                                raise ValueError("No 2D image or 3D image stack found")
+                            frame_count = data.shape[0] if data.ndim == 3 else 1
+                            if frame_count == 0:
+                                raise ValueError("Image stack is empty")
+                            base = os.path.splitext(fname)[0]
+                            for image_index in range(frame_count):
+                                image = data[image_index] if data.ndim == 3 else data[()]
+                                suffix = f"_{image_index}" if data.ndim == 3 or indexed_names else ""
+                                out_path = os.path.join(out_dir, f"{base}{suffix}.tiff")
+                                tifffile.imwrite(out_path, image.astype(np.float32))
+                                images_saved += 1
+                    else:
+                        image = read_image_file_single(filepath)
+                        if image is None:
+                            raise ValueError("No image data found")
+                        if not save_image(image, out_dir, fname):
+                            raise OSError("TIFF write failed")
+                        images_saved += 1
+                    converted += 1
+                except Exception as exc:
+                    failed += 1
+                    print(f"Failed to convert {fname}: {exc}")
+                else:
+                    if save_metafile:
+                        master_path = get_master_file_path(fname, os.path.dirname(filepath))
+                        if master_path and master_path not in processed_masters:
+                            try:
+                                metadata = extract_metadata_from_master(master_path)
+                                if metadata:
+                                    master_base = os.path.splitext(os.path.basename(master_path))[0]
+                                    metadata_path = os.path.join(out_dir, f"{master_base}.metafile")
+                                    if save_metadata_to_txt(metadata, metadata_path):
+                                        metadata_saved += 1
+                                        processed_masters.add(master_path)
+                            except Exception as exc:
+                                print(f"Failed to save metadata for {fname}: {exc}")
+                updates.put((converted, processed, failed, images_saved, metadata_saved, False))
+        finally:
+            updates.put((converted, len(source_files), failed, images_saved, metadata_saved, True))
+
+    def poll_progress():
+        latest = None
+        try:
+            while True:
+                latest = updates.get_nowait()
+        except queue.Empty:
+            pass
+        if latest is not None:
+            converted, processed, failed, images_saved, metadata_saved, finished = latest
+            percentage = 100 * converted / len(source_files)
+            progress_bar['value'] = converted
+            status.set(f"{converted:,} / {len(source_files):,} files converted ({percentage:.1f}%)")
+            detail.set(f"{processed:,} files processed; {failed:,} failed; {images_saved:,} TIFFs saved")
+            if finished:
+                detail.set(f"{'Completed with errors' if failed else 'Completed'} — "
+                           f"{failed:,} failed; {images_saved:,} TIFFs; {metadata_saved:,} metadata files")
+                close_button.config(state="normal")
+                progress_window.protocol("WM_DELETE_WINDOW", progress_window.destroy)
+                print(f"Conversion finished: {converted:,}/{len(source_files):,} files converted, "
+                      f"{failed:,} failed, {images_saved:,} TIFFs, {metadata_saved:,} metadata files.")
+                return
+        safe_after(100, poll_progress)
+
+    threading.Thread(target=convert_files, daemon=True).start()
+    poll_progress()
+
+
 def save_all_files_in_directory_multi():
     """Save all images from all HDF5 files in the directory as TIFF files,
     optionally saving master metadata as .metafile files (one per master)."""
@@ -1163,58 +1272,12 @@ def save_all_files_in_directory_multi():
         print("Directory selection cancelled.")
         return
 
-    total_images_saved = 0
-    total_files_processed = 0
-    total_metadata_saved = 0
-    processed_master_files = set()  # Track which master files have been processed
-
-    for fname in os.listdir(current_folder):
-        if fname.lower().endswith((".h5", ".hdf5")) and "master" not in fname.lower():
-            filepath = os.path.join(current_folder, fname)
-            with h5py.File(filepath, 'r') as hdf:
-                # Try common paths for image data
-                possible_paths = [
-                    '/entry/data/data', 'entry/data/data', '/data', 'data'
-                ]
-                data = None
-                for path in possible_paths:
-                    if path in hdf:
-                        data = hdf[path]
-                        break
-                if data is not None:
-                    arr = data[()]
-                    base, _ = os.path.splitext(fname)
-                    if arr.ndim == 3:
-                        for i in range(arr.shape[0]):
-                            out_name = f"{base}_{i}.tiff"
-                            out_path = os.path.join(out_dir, out_name)
-                            tifffile.imwrite(out_path, arr[i].astype(np.float32))
-                            print(f"Saved {out_path}")
-                            total_images_saved += 1
-                    elif arr.ndim == 2:
-                        out_name = f"{base}.tiff"
-                        out_path = os.path.join(out_dir, out_name)
-                        tifffile.imwrite(out_path, arr.astype(np.float32))
-                        print(f"Saved {out_path}")
-                        total_images_saved += 1
-                    total_files_processed += 1
-                    
-                    # Save metadata from master file (only once per master file)
-                    master_path = get_master_file_path(fname, current_folder) if save_metafile else None
-                    if master_path and master_path not in processed_master_files:
-                        metadata = extract_metadata_from_master(master_path)
-                        if metadata:
-                            # Use master file base name for metadata file
-                            master_base = os.path.splitext(os.path.basename(master_path))[0]
-                            metadata_out_name = f"{master_base}.metafile"
-                            metadata_out_path = os.path.join(out_dir, metadata_out_name)
-                            if save_metadata_to_txt(metadata, metadata_out_path):
-                                print(f"Saved: {metadata_out_path}")
-                                total_metadata_saved += 1
-                                processed_master_files.add(master_path)
-
-    print(f"Saved {total_images_saved} image(s) from {total_files_processed} h5 file(s) to {out_dir}")
-    print(f"Saved {total_metadata_saved} metadata file(s)")
+    source_files = [
+        (fname, os.path.join(current_folder, fname))
+        for fname in os.listdir(current_folder)
+        if fname.lower().endswith((".h5", ".hdf5")) and "master" not in fname.lower()
+    ]
+    start_tiff_conversion(source_files, out_dir, multi=True, save_metafile=save_metafile)
 
 
 def save_filtered_files_as_tiff_multi():
@@ -1226,41 +1289,8 @@ def save_filtered_files_as_tiff_multi():
         print("Directory selection cancelled.")
         return
     
-    count = 0
-    metadata_count = 0
-    processed_master_files = set()  # Track which master files have been processed
-    
-    # Save all images from all files in files_data (not just visible in file_list)
-    for base, filepath in files_data.items():
-        images = read_image_file_multi(filepath)
-        for img_idx, img in enumerate(images):
-            out_name = f"{os.path.splitext(base)[0]}_{img_idx}.tiff"
-            out_path = os.path.join(out_dir, out_name)
-            tifffile.imwrite(out_path, img.astype(np.float32))
-            print(f"Saved {out_path}")
-            count += 1
-        
-        # Save metadata from master file (only once per master file)
-        master_path = get_master_file_path(base, current_folder) if save_metafile else None
-        if master_path and master_path not in processed_master_files:
-            metadata = extract_metadata_from_master(master_path)
-            if metadata:
-                # Use master file base name for metadata file
-                master_base = os.path.splitext(os.path.basename(master_path))[0]
-                metadata_out_name = f"{master_base}.metafile"
-                metadata_out_path = os.path.join(out_dir, metadata_out_name)
-                if save_metadata_to_txt(metadata, metadata_out_path):
-                    print(f"Saved: {metadata_out_path}")
-                    metadata_count += 1
-                    processed_master_files.add(master_path)
-        
-        # Release memory after processing each file
-        del images
-        import gc
-        gc.collect()
-    
-    print(f"All {count} loaded images saved as TIFF in {out_dir}")
-    print(f"Saved {metadata_count} metadata file(s)")
+    start_tiff_conversion(list(files_data.items()), out_dir, multi=True,
+                          save_metafile=save_metafile, indexed_names=True)
 
 
 # --- v1p10 logic (single-image HDF5 and TIFF) ---
@@ -1661,9 +1691,10 @@ def save_image(data, out_dir, fname):
     # Write to TIFF
     try:
         tifffile.imwrite(path_out, tiff_data)
-        print(f"Saved: {path_out}")
+        return True
     except Exception as e:
         print(f"Failed to save {path_out}: {e}")
+        return False
 
 def save_all_files_in_directory_single():
     """Save all HDF5 files in the directory as TIFF files,
@@ -1680,40 +1711,11 @@ def save_all_files_in_directory_single():
     
     all_files = [
         fname for fname in os.listdir(current_folder)
-        if fname.endswith(".h5") and "master" not in fname.lower()
+        if fname.lower().endswith((".h5", ".hdf5")) and "master" not in fname.lower()
     ]
 
-    count = 0
-    metadata_count = 0
-    processed_master_files = set()  # Track which master files have been processed
-    
-    for fname in all_files:
-        filepath = os.path.join(current_folder, fname)
-        try:
-            with h5py.File(filepath, 'r') as hdf:
-                if '/entry/data/data' in hdf:
-                    data = np.squeeze(np.array(hdf['/entry/data/data']))
-                    save_image(data, output_folder, fname)
-                    count += 1
-                    
-                    # Save metadata from master file (only once per master file)
-                    master_path = get_master_file_path(fname, current_folder) if save_metafile else None
-                    if master_path and master_path not in processed_master_files:
-                        metadata = extract_metadata_from_master(master_path)
-                        if metadata:
-                            # Use master file base name for metadata file
-                            master_base = os.path.splitext(os.path.basename(master_path))[0]
-                            metadata_out_name = f"{master_base}.metafile"
-                            metadata_out_path = os.path.join(output_folder, metadata_out_name)
-                            if save_metadata_to_txt(metadata, metadata_out_path):
-                                print(f"Saved: {metadata_out_path}")
-                                metadata_count += 1
-                                processed_master_files.add(master_path)
-        except Exception as e:
-            print(f"Failed to load {fname}: {e}")
-
-    print(f"All {count} file(s) saved as TIFF in {output_folder}.")
-    print(f"Saved {metadata_count} metadata file(s)")
+    source_files = [(fname, os.path.join(current_folder, fname)) for fname in all_files]
+    start_tiff_conversion(source_files, output_folder, multi=False, save_metafile=save_metafile)
 
 
 def save_filtered_files_as_tiff_single():
@@ -1728,40 +1730,8 @@ def save_filtered_files_as_tiff_single():
         print("Directory selection cancelled.")
         return
 
-    count = 0
-    metadata_count = 0
-    processed_master_files = set()  # Track which master files have been processed
-    
-    for idx in range(file_list.size()):
-        fname = file_list.get(idx)
-        filepath = files_data[fname]  # This is a file path
-        data = read_image_file_single(filepath)
-        if data is not None:
-            save_image(data, output_folder, fname)
-            count += 1
-            
-            # Save metadata from master file (only once per master file)
-            master_path = get_master_file_path(fname, current_folder) if save_metafile else None
-            if master_path and master_path not in processed_master_files:
-                metadata = extract_metadata_from_master(master_path)
-                if metadata:
-                    # Use master file base name for metadata file
-                    master_base = os.path.splitext(os.path.basename(master_path))[0]
-                    metadata_out_name = f"{master_base}.metafile"
-                    metadata_out_path = os.path.join(output_folder, metadata_out_name)
-                    if save_metadata_to_txt(metadata, metadata_out_path):
-                        print(f"Saved: {metadata_out_path}")
-                        metadata_count += 1
-                        processed_master_files.add(master_path)
-            
-            # Release memory after processing each file
-            del data
-            import gc
-            gc.collect()
-        else:
-            print(f"Failed to load {fname}")
-    print(f"All {count} loaded file(s) saved in {output_folder}.")
-    print(f"Saved {metadata_count} metadata file(s)")
+    start_tiff_conversion(list(files_data.items()), output_folder, multi=False,
+                          save_metafile=save_metafile)
 
 
 # --- Shared display_image function (uses scale_mode) ---
